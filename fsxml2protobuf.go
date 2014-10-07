@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"github.com/codegangsta/cli"
+	"github.com/willf/bloom"
 	"github.com/DallanQ/fsxml2protobuf/fs_data"
 	"compress/gzip"
 	"sync"
@@ -22,7 +23,7 @@ import (
 
 var stdPlaces map[string]string
 var sourceRefs map[string][]string
-var personIds = make(map[string]bool)
+var personIdsBloom *bloom.BloomFilter
 var personIdsMutex = &sync.Mutex{}
 
 type Data struct {
@@ -45,7 +46,7 @@ type Relationship struct {
 	Facts []Fact `xml:"fact"`
 }
 type PersonResource struct {
-	Resource string `xml:"resource"`
+	Resource string `xml:"resource,attr"`
 }
 type Gender struct {
 	Type string `xml:"type,attr"`  // http://gedcomx.org/Male or Female or Unknown
@@ -172,21 +173,31 @@ func getArkPid(ark string) string {
 }
 
 func getRelationships(relationships []Relationship) ([]string, []string, []string) {
-	parents := make([]string, 0)
-	children := make([]string, 0)
-	spouses := make([]string, 0)
+	var parents []string
+	var children []string
+	var spouses []string
 	for _, relationship := range relationships {
 		if relationship.Type == "http://gedcomx.org/ParentChild" {
 		    if strings.HasPrefix(relationship.Person1.Resource, "#") {
-				children = append(children, getArkPid(relationship.Person2.Resource))
+				relId := getArkPid(relationship.Person2.Resource)
+				if relId != "" {
+					children = append(children, relId)
+				}
 			} else {
-				parents = append(parents, getArkPid(relationship.Person1.Resource))
+				relId := getArkPid(relationship.Person1.Resource)
+				if relId != "" {
+					parents = append(parents, relId)
+				}
 			}
 		} else { // Couple
+			var relId string
 			if strings.HasPrefix(relationship.Person1.Resource, "#") {
-				spouses = append(spouses, getArkPid(relationship.Person2.Resource))
+				relId = getArkPid(relationship.Person2.Resource)
 			} else {
-				spouses = append(spouses, getArkPid(relationship.Person1.Resource))
+				relId = getArkPid(relationship.Person1.Resource)
+			}
+			if relId != "" {
+				spouses = append(spouses, relId)
 			}
 		}
 	}
@@ -262,14 +273,16 @@ func processFile(filename string) int {
 		// process each person only once
 		// better go style might put this in a separate goroutine with channels to communicate
 		personIdsMutex.Lock()
-		isSeen := personIds[person.Id]
-		personIds[person.Id] = true
+		isSeen := personIdsBloom.Test([]byte(person.Id))
+		if !isSeen {
+			personIdsBloom.Add([]byte(person.Id))
+		}
 		personIdsMutex.Unlock()
 
 		if !isSeen {
 			gender := getGender(&person)
 			parents, children, spouses := getRelationships(relationships)
-			fsPersons.Persons = append(fsPersons.Persons, &fs_data.FamilySearchPerson {
+			fsPerson := &fs_data.FamilySearchPerson {
 				Id: &person.Id,
 				Gender: &gender,
 				Contributors: getContributors(&person, relationships),
@@ -278,7 +291,8 @@ func processFile(filename string) int {
 				Parents: parents,
 				Children: children,
 				Spouses: spouses,
-			})
+			}
+			fsPersons.Persons = append(fsPersons.Persons, fsPerson)
 			cnt++
 		}
 	}
@@ -313,6 +327,7 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 	fileInfo, err := os.Stat(inFilename)
 	check(err)
 	if fileInfo.IsDir() {
+		personIdsBloom = bloom.New(80000000000, 70) // assume reading 800M people, p=1*E-21
 		fileInfos, err := ioutil.ReadDir(inFilename)
 		check(err)
 		// process files (roughly) backwards to increase likelihood of processing latest version of each person
@@ -327,6 +342,7 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 			numFiles++
 		}
 	} else {
+		personIdsBloom = bloom.New(3000000, 70) // assume reading 30K people, p=1*E-21
 		fileNames <- inFilename+"\t"+outFilename
 		numFiles++
 	}
