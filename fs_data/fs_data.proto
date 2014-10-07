@@ -1,0 +1,37 @@
+syntax = "proto2";
+package fs_data;
+
+option java_package = "org.rootsdev.fsdata.proto";
+option java_generate_equals_and_hash = true;
+
+enum FSGender {
+  MALE = 1;
+  FEMALE = 2;
+  UNKNOWN = 3;
+}
+
+message FSFact {
+  optional string type = 1;
+  optional int32 year = 2;
+  optional string place = 3;
+}
+
+message FSSource {
+  optional string source_id = 1;
+  optional string title = 2;
+}
+
+message FamilySearchPerson {
+  optional string id = 1;
+  optional FSGender gender = 2;
+  repeated FSFact facts = 3;
+  repeated string contributors = 4;
+  repeated FSSource sources = 5;
+  repeated string parents = 6;
+  repeated string spouses = 7;
+  repeated string children = 8;
+}
+
+message FamilySearchPersons {
+  repeated FamilySearchPerson persons = 1;
+}
