@@ -5,6 +5,7 @@ import (
 	"os"
 	"io"
 	"bufio"
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"code.google.com/p/goprotobuf/proto"
@@ -232,7 +233,7 @@ func check(err error) {
 	}
 }
 
-func processFile(filename string) int {
+func processFile(filename string, gzipOutput bool) int {
 	inOut := strings.SplitN(filename, "\t", 2)
 	inFilename := inOut[0]
 	outFilename := inOut[1]
@@ -296,13 +297,21 @@ func processFile(filename string) int {
 			cnt++
 		}
 	}
-	bytes, err := proto.Marshal(fsPersons)
+	b, err := proto.Marshal(fsPersons)
 	if err != nil {
 		log.Printf("Error marshaling %s %v", inFilename, err)
 		return 0
 	}
 
-	err = ioutil.WriteFile(outFilename, bytes, os.FileMode(0644))
+	if gzipOutput {
+		var buf bytes.Buffer
+		w := gzip.NewWriter(&buf)
+		w.Write(b)
+		w.Close()
+		b = buf.Bytes()
+	}
+
+	err = ioutil.WriteFile(outFilename, b, 0644)
 	if err != nil {
 		log.Printf("Error writing %s %v", outFilename, err)
 		return 0
@@ -311,13 +320,14 @@ func processFile(filename string) int {
 	return cnt
 }
 
-func processFiles(fileNames chan string, results chan int) {
+func processFiles(fileNames chan string, results chan int, gzipOutput bool) {
 	for fileName := range fileNames {
-		results <- processFile(fileName)
+		results <- processFile(fileName, gzipOutput)
 	}
 }
 
-func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string, outFilename string, numWorkers int) {
+func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string, outFilename string,
+		 numWorkers int, gzipOutput bool) {
 	numCPU := runtime.NumCPU()
 	fmt.Printf("Number of CPUs=%d\n",numCPU)
 	runtime.GOMAXPROCS(int(math.Min(float64(numCPU), float64(numWorkers))))
@@ -334,11 +344,16 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 		for i := len(fileInfos) - 1; i >= 0; i-- {
 			fileInfo = fileInfos[i]
 			start := 0
-			if fileInfo.Name()[0:len("gedcomxb.")] == "gedcomxb." {
+			if strings.HasPrefix(fileInfo.Name(), "gedcomxb.") {
 				start = len("gedcomxb.")
 			}
 			end := strings.Index(fileInfo.Name(), ".xml")
-			fileNames <- inFilename+"/"+fileInfo.Name()+"\t"+outFilename+"/"+fileInfo.Name()[start:end]+".protobuf"
+			suffix := ""
+			if gzipOutput {
+				suffix = ".gz"
+			}
+			fileNames <- inFilename+"/"+fileInfo.Name()+"\t"+
+						 outFilename+"/"+fileInfo.Name()[start:end]+".protobuf"+suffix
 			numFiles++
 		}
 	} else {
@@ -364,7 +379,7 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 	results := make(chan int)
 
 	for i := 0; i < numWorkers; i++ {
-		go processFiles(fileNames, results)
+		go processFiles(fileNames, results, gzipOutput)
 	}
 
 	recordsProcessed := 0
@@ -405,9 +420,13 @@ func main() {
 			Usage: "number of workers",
 			Value: 16,
 		},
+		cli.BoolFlag {
+			Name: "gzip, z",
+			Usage: "gzip output",
+		},
 	}
 	app.Action = func(c *cli.Context) {
-		run(c.String("places"), c.String("sourcerefs"), c.String("in"), c.String("out"), c.Int("workers"))
+		run(c.String("places"), c.String("sourcerefs"), c.String("in"), c.String("out"), c.Int("workers"), c.Bool("gzip"))
 	}
 	app.Run(os.Args)
 }
