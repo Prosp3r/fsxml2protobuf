@@ -1,25 +1,25 @@
 package main
 
 import (
-	"log"
-	"os"
-	"io"
 	"bufio"
 	"bytes"
+	"code.google.com/p/goprotobuf/proto"
+	"compress/gzip"
 	"encoding/xml"
 	"fmt"
-	"code.google.com/p/goprotobuf/proto"
-	"io/ioutil"
-	"strings"
-	"regexp"
-	"strconv"
+	"github.com/DallanQ/fsxml2protobuf/fs_data"
 	"github.com/codegangsta/cli"
 	"github.com/willf/bloom"
-	"github.com/DallanQ/fsxml2protobuf/fs_data"
-	"compress/gzip"
-	"sync"
-	"runtime"
+	"io"
+	"io/ioutil"
+	"log"
 	"math"
+	"os"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
 )
 
 var stdPlaces map[string]string
@@ -27,52 +27,64 @@ var sourceRefs map[string][]string
 var personIdsBloom *bloom.BloomFilter
 var personIdsMutex = &sync.Mutex{}
 
+// Data is the global BFF record structure
 type Data struct {
 	Records []Record `xml:"record"`
 }
+// Record contains people and relationships
 type Record struct {
-	Person Person `xml:"person"`
+	Person        Person         `xml:"person"`
 	Relationships []Relationship `xml:"relationship"`
 }
+// Person contains information about a person
 type Person struct {
-	Id string `xml:"id,attr"`
+	ID     string `xml:"id,attr"`
 	Gender Gender `xml:"gender"`
-	Names []Name `xml:"name"`
-	Facts []Fact `xml:"fact"`
+	Names  []Name `xml:"name"`
+	Facts  []Fact `xml:"fact"`
 }
+// Relationship contains information about a relationship
 type Relationship struct {
-	Type string `xml:"type,attr"` // http://gedcomx.org/ParentChild or http://gedcomx.org/Couple
-	Person1 PersonResource `xml:"person1"` // https://familysearch.org/ark:/61903/4:1:K8PV-6M7 or #218J-DF3
+	Type    string         `xml:"type,attr"` // http://gedcomx.org/ParentChild or http://gedcomx.org/Couple
+	Person1 PersonResource `xml:"person1"`   // https://familysearch.org/ark:/61903/4:1:K8PV-6M7 or #218J-DF3
 	Person2 PersonResource `xml:"person2"`
-	Facts []Fact `xml:"fact"`
+	Facts   []Fact         `xml:"fact"`
 }
+// PersonResource contains a resource id
 type PersonResource struct {
 	Resource string `xml:"resource,attr"`
 }
+// Gender contains the gender fact
 type Gender struct {
-	Type string `xml:"type,attr"`  // http://gedcomx.org/Male or Female or Unknown
+	Type        string      `xml:"type,attr"` // http://gedcomx.org/Male or Female or Unknown
 	Attribution Attribution `xml:"attribution"`
 }
+// Name we don't capture names; only their attribution
 type Name struct {
 	Attribution Attribution `xml:"attribution"`
 }
+// Fact contains all other facts
 type Fact struct {
-	Type string `xml:"type,attr"`
+	Type        string      `xml:"type,attr"`
 	Attribution Attribution `xml:"attribution"`
-	Date Date `xml:"date"`
-	Place Place `xml:"place"`
+	Date        Date        `xml:"date"`
+	Place       Place       `xml:"place"`
 }
+// Date we only capture the user-entered text
 type Date struct {
 	Original string `xml:"original"`
 }
+// Place we only capture the user-entered text
 type Place struct {
 	Original string `xml:"original"`
 }
+// Attribution contains the contributor
 type Attribution struct {
 	Contributor Contributor `xml:"contributor"`
 }
+// Contributor contains information about the user
 type Contributor struct {
-	ResourceId string `xml:"resourceId,attr"`
+	ResourceID string `xml:"resourceId,attr"`
 }
 
 func getGender(person *Person) fs_data.FSGender {
@@ -89,21 +101,21 @@ func getGender(person *Person) fs_data.FSGender {
 
 func getContributors(person *Person, relationships []Relationship) []string {
 	contributors := make(map[string]bool)
-	contributors[person.Gender.Attribution.Contributor.ResourceId] = true
+	contributors[person.Gender.Attribution.Contributor.ResourceID] = true
 	for _, name := range person.Names {
-	    contributors[name.Attribution.Contributor.ResourceId] = true
+		contributors[name.Attribution.Contributor.ResourceID] = true
 	}
 	for _, fact := range person.Facts {
-		contributors[fact.Attribution.Contributor.ResourceId] = true
+		contributors[fact.Attribution.Contributor.ResourceID] = true
 	}
 	for _, relationship := range relationships {
 		for _, fact := range relationship.Facts {
-			contributors[fact.Attribution.Contributor.ResourceId] = true
+			contributors[fact.Attribution.Contributor.ResourceID] = true
 		}
 	}
 
 	var result []string
-	for contributor, _ := range contributors {
+	for contributor := range contributors {
 		if contributor != "" {
 			result = append(result, contributor)
 		}
@@ -113,7 +125,7 @@ func getContributors(person *Person, relationships []Relationship) []string {
 
 func getSources(person *Person) []*fs_data.FSSource {
 	var sources []*fs_data.FSSource
-	for _, ref := range sourceRefs[person.Id] {
+	for _, ref := range sourceRefs[person.ID] {
 		sources = append(sources, &fs_data.FSSource{SourceId: &ref})
 	}
 	return sources
@@ -140,7 +152,7 @@ func getStdPlace(place string) string {
 
 func getFact(fact Fact) *fs_data.FSFact {
 	t := getGedcomXLabel(fact.Type)
-	fsFact := &fs_data.FSFact {
+	fsFact := &fs_data.FSFact{
 		Type: &t,
 	}
 	year := getYear(fact.Date.Original)
@@ -179,26 +191,26 @@ func getRelationships(relationships []Relationship) ([]string, []string, []strin
 	var spouses []string
 	for _, relationship := range relationships {
 		if relationship.Type == "http://gedcomx.org/ParentChild" {
-		    if strings.HasPrefix(relationship.Person1.Resource, "#") {
-				relId := getArkPid(relationship.Person2.Resource)
-				if relId != "" {
-					children = append(children, relId)
+			if strings.HasPrefix(relationship.Person1.Resource, "#") {
+				relID := getArkPid(relationship.Person2.Resource)
+				if relID != "" {
+					children = append(children, relID)
 				}
 			} else {
-				relId := getArkPid(relationship.Person1.Resource)
-				if relId != "" {
-					parents = append(parents, relId)
+				relID := getArkPid(relationship.Person1.Resource)
+				if relID != "" {
+					parents = append(parents, relID)
 				}
 			}
 		} else { // Couple
-			var relId string
+			var relID string
 			if strings.HasPrefix(relationship.Person1.Resource, "#") {
-				relId = getArkPid(relationship.Person2.Resource)
+				relID = getArkPid(relationship.Person2.Resource)
 			} else {
-				relId = getArkPid(relationship.Person1.Resource)
+				relID = getArkPid(relationship.Person1.Resource)
 			}
-			if relId != "" {
-				spouses = append(spouses, relId)
+			if relID != "" {
+				spouses = append(spouses, relID)
 			}
 		}
 	}
@@ -274,24 +286,21 @@ func processFile(filename string, gzipOutput bool) int {
 		// process each person only once
 		// better go style might put this in a separate goroutine with channels to communicate
 		personIdsMutex.Lock()
-		isSeen := personIdsBloom.Test([]byte(person.Id))
-		if !isSeen {
-			personIdsBloom.Add([]byte(person.Id))
-		}
+		isSeen := personIdsBloom.TestAndAdd([]byte(person.ID))
 		personIdsMutex.Unlock()
 
 		if !isSeen {
 			gender := getGender(&person)
 			parents, children, spouses := getRelationships(relationships)
-			fsPerson := &fs_data.FamilySearchPerson {
-				Id: &person.Id,
-				Gender: &gender,
+			fsPerson := &fs_data.FamilySearchPerson{
+				Id:           &person.ID,
+				Gender:       &gender,
 				Contributors: getContributors(&person, relationships),
-				Sources: getSources(&person),
-				Facts: getFacts(&person, relationships),
-				Parents: parents,
-				Children: children,
-				Spouses: spouses,
+				Sources:      getSources(&person),
+				Facts:        getFacts(&person, relationships),
+				Parents:      parents,
+				Children:     children,
+				Spouses:      spouses,
 			}
 			fsPersons.Persons = append(fsPersons.Persons, fsPerson)
 			cnt++
@@ -326,10 +335,9 @@ func processFiles(fileNames chan string, results chan int, gzipOutput bool) {
 	}
 }
 
-func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string, outFilename string,
-		 numWorkers int, gzipOutput bool) {
+func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string, outFilename string, numWorkers int, gzipOutput bool) {
 	numCPU := runtime.NumCPU()
-	fmt.Printf("Number of CPUs=%d\n",numCPU)
+	fmt.Printf("Number of CPUs=%d\n", numCPU)
 	runtime.GOMAXPROCS(int(math.Min(float64(numCPU), float64(numWorkers))))
 
 	numFiles := 0
@@ -352,13 +360,13 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 			if gzipOutput {
 				suffix = ".gz"
 			}
-			fileNames <- inFilename+"/"+fileInfo.Name()+"\t"+
-						 outFilename+"/"+fileInfo.Name()[start:end]+".protobuf"+suffix
+			fileNames <- inFilename + "/" + fileInfo.Name() + "\t" +
+				outFilename + "/" + fileInfo.Name()[start:end] + ".protobuf" + suffix
 			numFiles++
 		}
 	} else {
 		personIdsBloom = bloom.New(3000000, 70) // assume reading 30K people, p=1*E-21
-		fileNames <- inFilename+"\t"+outFilename
+		fileNames <- inFilename + "\t" + outFilename
 		numFiles++
 	}
 	close(fileNames)
@@ -385,9 +393,9 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 	recordsProcessed := 0
 	filesProcessed := 0
 	for i := 0; i < numFiles; i++ {
-		recordsProcessed += <- results
+		recordsProcessed += <-results
 		filesProcessed++
-		if filesProcessed % 100 == 0 {
+		if filesProcessed%100 == 0 {
 			fmt.Print(".")
 		}
 	}
@@ -398,30 +406,30 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "fsxml2protobuf"
 	app.Usage = "Convert FamilySearch BFF xml files to protobuf format"
-	app.Flags = []cli.Flag {
-		cli.StringFlag {
-			Name: "places, p",
+	app.Flags = []cli.Flag{
+		cli.StringFlag{
+			Name:  "places, p",
 			Usage: "standardized places filename",
 		},
-		cli.StringFlag {
-			Name: "sourcerefs, s",
+		cli.StringFlag{
+			Name:  "sourcerefs, s",
 			Usage: "source references filename",
 		},
-		cli.StringFlag {
-			Name: "in, i",
+		cli.StringFlag{
+			Name:  "in, i",
 			Usage: "input filename or directory",
 		},
-		cli.StringFlag {
-			Name: "out, o",
+		cli.StringFlag{
+			Name:  "out, o",
 			Usage: "output filename or directory",
 		},
-		cli.IntFlag {
-			Name: "workers, w",
+		cli.IntFlag{
+			Name:  "workers, w",
 			Usage: "number of workers",
 			Value: 16,
 		},
-		cli.BoolFlag {
-			Name: "gzip, z",
+		cli.BoolFlag{
+			Name:  "gzip, z",
 			Usage: "gzip output",
 		},
 	}
