@@ -147,7 +147,13 @@ func getYear(date string) int32 {
 }
 
 func getStdPlace(place string) string {
-	return stdPlaces[strings.Replace(place, "\t", " ", -1)]
+	place = strings.Replace(place, "\t", " ", -1)
+	stdPlace := stdPlaces[place]
+	if stdPlace != "" {
+		return stdPlace
+	} else {
+		return place
+	}
 }
 
 func getFact(fact Fact) *fs_data.FSFact {
