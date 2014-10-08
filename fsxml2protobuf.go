@@ -432,7 +432,7 @@ func main() {
 		cli.IntFlag{
 			Name:  "workers, w",
 			Usage: "number of workers",
-			Value: 16,
+			Value: 1,
 		},
 		cli.BoolFlag{
 			Name:  "gzip, z",
