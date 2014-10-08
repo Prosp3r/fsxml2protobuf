@@ -8,7 +8,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"github.com/DallanQ/fsxml2protobuf/fs_data"
-	"github.com/codegangsta/cli"
 	"github.com/willf/bloom"
 	"io"
 	"io/ioutil"
@@ -20,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"flag"
 )
 
 var stdPlaces map[string]string
@@ -341,18 +341,27 @@ func processFiles(fileNames chan string, results chan int, gzipOutput bool) {
 	}
 }
 
-func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string, outFilename string, numWorkers int, gzipOutput bool) {
+var stdPlacesFilename = flag.String("p", "", "standardized places filename")
+var sourceRefsFilename = flag.String("s", "", "source references filename")
+var inFilename = flag.String("i", "", "input filename or directory")
+var outFilename = flag.String("o", "", "output filename or directory")
+var numWorkers = flag.Int("w", 1, "number of workders)")
+var gzipOutput = flag.Bool("z", false, "gzip output")
+
+func main() {
+	flag.Parse()
+
 	numCPU := runtime.NumCPU()
 	fmt.Printf("Number of CPUs=%d\n", numCPU)
-	runtime.GOMAXPROCS(int(math.Min(float64(numCPU), float64(numWorkers))))
+	runtime.GOMAXPROCS(int(math.Min(float64(numCPU), float64(*numWorkers))))
 
 	numFiles := 0
 	fileNames := make(chan string, 100000)
-	fileInfo, err := os.Stat(inFilename)
+	fileInfo, err := os.Stat(*inFilename)
 	check(err)
 	if fileInfo.IsDir() {
 		personIdsBloom = bloom.New(80000000000, 70) // assume reading 800M people, p=1*E-21
-		fileInfos, err := ioutil.ReadDir(inFilename)
+		fileInfos, err := ioutil.ReadDir(*inFilename)
 		check(err)
 		// process files (roughly) backwards to increase likelihood of processing latest version of each person
 		for i := len(fileInfos) - 1; i >= 0; i-- {
@@ -363,28 +372,28 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 			}
 			end := strings.Index(fileInfo.Name(), ".xml")
 			suffix := ""
-			if gzipOutput {
+			if *gzipOutput {
 				suffix = ".gz"
 			}
-			fileNames <- inFilename + "/" + fileInfo.Name() + "\t" +
-				outFilename + "/" + fileInfo.Name()[start:end] + ".protobuf" + suffix
+			fileNames <- *inFilename + "/" + fileInfo.Name() + "\t" +
+				*outFilename + "/" + fileInfo.Name()[start:end] + ".protobuf" + suffix
 			numFiles++
 		}
 	} else {
 		personIdsBloom = bloom.New(3000000, 70) // assume reading 30K people, p=1*E-21
-		fileNames <- inFilename + "\t" + outFilename
+		fileNames <- *inFilename + "\t" + *outFilename
 		numFiles++
 	}
 	close(fileNames)
 
 	fmt.Println("Reading places")
-	stdPlacesFile, err := os.Open(stdPlacesFilename)
+	stdPlacesFile, err := os.Open(*stdPlacesFilename)
 	check(err)
 	defer stdPlacesFile.Close()
 	stdPlaces = readStdPlaces(stdPlacesFile)
 
 	fmt.Println("Reading sources")
-	sourceRefsFile, err := os.Open(sourceRefsFilename)
+	sourceRefsFile, err := os.Open(*sourceRefsFilename)
 	check(err)
 	defer sourceRefsFile.Close()
 	sourceRefs = readSourceRefs(sourceRefsFile)
@@ -392,8 +401,8 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 	fmt.Print("Processing files")
 	results := make(chan int)
 
-	for i := 0; i < numWorkers; i++ {
-		go processFiles(fileNames, results, gzipOutput)
+	for i := 0; i < *numWorkers; i++ {
+		go processFiles(fileNames, results, *gzipOutput)
 	}
 
 	recordsProcessed := 0
@@ -406,41 +415,4 @@ func run(stdPlacesFilename string, sourceRefsFilename string, inFilename string,
 		}
 	}
 	fmt.Printf("\nTotal files=%d records=%d\n", filesProcessed, recordsProcessed)
-}
-
-func main() {
-	app := cli.NewApp()
-	app.Name = "fsxml2protobuf"
-	app.Usage = "Convert FamilySearch BFF xml files to protobuf format"
-	app.Flags = []cli.Flag{
-		cli.StringFlag{
-			Name:  "places, p",
-			Usage: "standardized places filename",
-		},
-		cli.StringFlag{
-			Name:  "sourcerefs, s",
-			Usage: "source references filename",
-		},
-		cli.StringFlag{
-			Name:  "in, i",
-			Usage: "input filename or directory",
-		},
-		cli.StringFlag{
-			Name:  "out, o",
-			Usage: "output filename or directory",
-		},
-		cli.IntFlag{
-			Name:  "workers, w",
-			Usage: "number of workers",
-			Value: 1,
-		},
-		cli.BoolFlag{
-			Name:  "gzip, z",
-			Usage: "gzip output",
-		},
-	}
-	app.Action = func(c *cli.Context) {
-		run(c.String("places"), c.String("sourcerefs"), c.String("in"), c.String("out"), c.Int("workers"), c.Bool("gzip"))
-	}
-	app.Run(os.Args)
 }
